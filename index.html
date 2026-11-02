@@ -280,7 +280,7 @@ body:not(.playing) .eq i{animation-play-state:paused}
 
 <script>
 'use strict';
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.0.4';
 const NAME = 'Shahfiq';
 
 /* ================= Helpers ================= */
@@ -583,7 +583,7 @@ async function loadIdx(i, autoplay = true, startAt = null) {
   if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
   let pos = startAt;
   if (pos == null && settings.resume && t.duration >= 600 && t.pos > 5 && t.pos < t.duration - 15) pos = t.pos;
-  clearTimeout(seekCheck); pendingSeek = pos ? pos : null;
+  pendingSeek = pos ? pos : null;
   if (autoplay) { try { await audio.play(); } catch (e) { console.warn(e); renderPlayState(); } }
   updateMediaSession(t);
   savePlayer();
@@ -660,6 +660,8 @@ function dropFromQueue(set) {
 audio.addEventListener('play', () => { if (P.loadedId) audio.playbackRate = P.speed; renderPlayState(); });
 audio.addEventListener('pause', () => { renderPlayState(); if (P.loadedId) savePos(); });
 audio.addEventListener('timeupdate', () => onTime());
+audio.addEventListener('canplay', applyPendingSeek);
+audio.addEventListener('playing', applyPendingSeek);
 audio.addEventListener('ended', async () => {
   if (!P.loadedId) return;
   const t = byId(P.loadedId);
@@ -683,8 +685,8 @@ audio.addEventListener('error', () => {
 
 /* ---------- Seeking ----------
    iOS often hasn't loaded a paused song yet (no duration, seeks ignored), so a seek is
-   remembered and applied once the file is ready, and checked afterwards in case Safari drops it. */
-let pendingSeek = null, seekCheck = null;
+   remembered and applied once, as soon as the file is ready. */
+let pendingSeek = null;
 function curDur() {
   const d = audio.duration;
   if (isFinite(d) && d > 0) return d;
@@ -697,23 +699,8 @@ function curPos() {
 function applyPendingSeek() {
   if (pendingSeek == null || audio.readyState < 1) return;
   const t = pendingSeek;
-  try { audio.currentTime = t; pendingSeek = null; } catch { return; }
-  verifySeek(t);
-}
-function verifySeek(t) {
-  clearTimeout(seekCheck);
-  const started = Date.now();
-  seekCheck = setTimeout(() => {
-    if (pendingSeek != null || !P.loadedId) return;
-    const expect = t + (audio.paused ? 0 : (Date.now() - started) / 1000 * (audio.playbackRate || 1));
-    if (Math.abs(audio.currentTime - expect) > 3) {
-      // Safari ignored it: reload the song and seek as soon as it's ready.
-      const wasPlaying = !audio.paused;
-      pendingSeek = t;
-      audio.addEventListener('loadedmetadata', () => { applyPendingSeek(); if (wasPlaying) audio.play().catch(() => {}); }, { once: true });
-      audio.src = P.url; audio.load();
-    }
-  }, 800);
+  pendingSeek = null; // one attempt only: never retry in a loop
+  try { audio.currentTime = t; } catch (e) { console.warn('seek', e); }
 }
 function seekTo(t) {
   if (!curId()) return;
