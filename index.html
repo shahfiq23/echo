@@ -265,7 +265,7 @@ body:not(.playing) .eq i{animation-play-state:paused}
 
 <script>
 'use strict';
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const NAME = 'Shahfiq';
 
 /* ================= Helpers ================= */
@@ -1175,7 +1175,7 @@ document.addEventListener('touchstart', () => {}, { passive: true });
 $('#file').addEventListener('change', e => { const f = e.target.files; if (f && f.length) importFiles(f); e.target.value = ''; });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { if (P.loadedId) savePos(); }
-  else { $('#hello').textContent = `${greeting()}, ${NAME}`; if (pendingReload && audio.paused) location.reload(); }
+  else { $('#hello').textContent = `${greeting()}, ${NAME}`; if (swReg) swReg.update().catch(() => {}); if (pendingReload && audio.paused) location.reload(); }
 });
 
 /* ================= Launch animation ================= */
@@ -1195,7 +1195,7 @@ let swReg = null, pendingReload = false;
 if ('serviceWorker' in navigator && location.protocol === 'https:' || location.hostname === 'localhost') {
   if ('serviceWorker' in navigator) {
     const hadController = !!navigator.serviceWorker.controller;
-    navigator.serviceWorker.register('sw.js').then(r => { swReg = r; r.update().catch(() => {}); }).catch(() => {});
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => { swReg = r; r.update().catch(() => {}); }).catch(() => {});
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadController) return;
       if (audio.paused) location.reload(); else pendingReload = true;

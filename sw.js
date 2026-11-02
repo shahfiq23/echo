@@ -1,5 +1,5 @@
 // Echo service worker. Bump VERSION on every update.
-const VERSION = 'echo-v1.0.0';
+const VERSION = 'echo-v1.0.1';
 const SHELL = [
   './',
   './index.html',
@@ -10,7 +10,7 @@ const SHELL = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
@@ -29,10 +29,10 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
 
-  // App page: try the network first so updates arrive, fall back to the cached copy offline.
+  // App page: always ask GitHub for the newest copy (skipping its 10-minute cache), fall back to the cached copy offline.
   if (req.mode === 'navigate' || url.pathname.endsWith('/index.html')) {
     e.respondWith(
-      Promise.race([fetch(req, { cache: 'no-store' }), timeout(3500)])
+      Promise.race([fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }), timeout(3500)])
         .then(res => {
           if (res && res.ok) {
             const copy = res.clone();
