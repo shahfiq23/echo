@@ -280,7 +280,7 @@ body:not(.playing) .eq i{animation-play-state:paused}
 
 <script>
 'use strict';
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 const NAME = 'Shahfiq';
 
 /* ================= Helpers ================= */
@@ -583,7 +583,7 @@ async function loadIdx(i, autoplay = true, startAt = null) {
   if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
   let pos = startAt;
   if (pos == null && settings.resume && t.duration >= 600 && t.pos > 5 && t.pos < t.duration - 15) pos = t.pos;
-  if (pos) audio.addEventListener('loadedmetadata', () => { try { audio.currentTime = pos; } catch {} onTime(); }, { once: true });
+  clearTimeout(seekCheck); pendingSeek = pos ? pos : null;
   if (autoplay) { try { await audio.play(); } catch (e) { console.warn(e); renderPlayState(); } }
   updateMediaSession(t);
   savePlayer();
@@ -613,21 +613,19 @@ function next(auto = false) {
 }
 function prev() {
   if (!P.queue.length) return;
-  if (audio.currentTime > 3 || P.idx === 0) { audio.currentTime = 0; onTime(); return; }
+  if (curPos() > 3 || P.idx === 0) { seekTo(0); return; }
   prime(); loadIdx(P.idx - 1, !audio.paused || true);
 }
 function seekBy(s) {
-  if (!isFinite(audio.duration)) return;
-  audio.currentTime = Math.max(0, Math.min(audio.duration - .25, audio.currentTime + s));
-  onTime();
+  seekTo(curPos() + s);
 }
 function savePos() {
   const t = byId(P.loadedId);
-  if (t && t.duration >= 600) { t.pos = audio.currentTime || 0; idb.put('tracks', t).catch(() => {}); }
+  if (t && t.duration >= 600) { t.pos = curPos(); idb.put('tracks', t).catch(() => {}); }
   savePlayer();
 }
 function savePlayer() {
-  LS.set('player', { queue: P.queue, order: P.order, cur: curId() || null, shuffle: P.shuffle, repeat: P.repeat, speed: P.speed, pos: P.loadedId ? (audio.currentTime || 0) : 0 });
+  LS.set('player', { queue: P.queue, order: P.order, cur: curId() || null, shuffle: P.shuffle, repeat: P.repeat, speed: P.speed, pos: P.loadedId ? curPos() : 0 });
 }
 function playNext(id) {
   if (!curId()) { prime(); playList([id], 0, false); return; }
@@ -667,7 +665,7 @@ audio.addEventListener('ended', async () => {
   const t = byId(P.loadedId);
   if (t) { t.plays = (t.plays || 0) + 1; t.pos = 0; idb.put('tracks', t).catch(() => {}); }
   if (P.sleep && P.sleep.end) { P.sleep = null; renderModes(); toast('Sleep timer ended'); renderPlayState(); return; }
-  if (P.repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return; }
+  if (P.repeat === 'one') { seekTo(0); audio.play().catch(() => {}); return; }
   next(true);
 });
 audio.addEventListener('loadedmetadata', () => {
@@ -675,6 +673,7 @@ audio.addEventListener('loadedmetadata', () => {
   if (t && isFinite(audio.duration) && audio.duration > 0 && Math.abs((t.duration || 0) - audio.duration) > 1) {
     t.duration = audio.duration; idb.put('tracks', t).catch(() => {}); renderNow();
   }
+  applyPendingSeek();
   onTime();
 });
 audio.addEventListener('error', () => {
@@ -682,14 +681,60 @@ audio.addEventListener('error', () => {
   toast("This file can't be played on iPhone");
 });
 
+/* ---------- Seeking ----------
+   iOS often hasn't loaded a paused song yet (no duration, seeks ignored), so a seek is
+   remembered and applied once the file is ready, and checked afterwards in case Safari drops it. */
+let pendingSeek = null, seekCheck = null;
+function curDur() {
+  const d = audio.duration;
+  if (isFinite(d) && d > 0) return d;
+  const t = byId(P.loadedId || curId()); return t ? t.duration || 0 : 0;
+}
+function curPos() {
+  if (pendingSeek != null) return pendingSeek;
+  return P.loadedId ? (audio.currentTime || 0) : (LS.get('player', {}).pos || 0);
+}
+function applyPendingSeek() {
+  if (pendingSeek == null || audio.readyState < 1) return;
+  const t = pendingSeek;
+  try { audio.currentTime = t; pendingSeek = null; } catch { return; }
+  verifySeek(t);
+}
+function verifySeek(t) {
+  clearTimeout(seekCheck);
+  const started = Date.now();
+  seekCheck = setTimeout(() => {
+    if (pendingSeek != null || !P.loadedId) return;
+    const expect = t + (audio.paused ? 0 : (Date.now() - started) / 1000 * (audio.playbackRate || 1));
+    if (Math.abs(audio.currentTime - expect) > 3) {
+      // Safari ignored it: reload the song and seek as soon as it's ready.
+      const wasPlaying = !audio.paused;
+      pendingSeek = t;
+      audio.addEventListener('loadedmetadata', () => { applyPendingSeek(); if (wasPlaying) audio.play().catch(() => {}); }, { once: true });
+      audio.src = P.url; audio.load();
+    }
+  }, 800);
+}
+function seekTo(t) {
+  if (!curId()) return;
+  const d = curDur();
+  t = Math.max(0, d ? Math.min(d - .3, t) : t);
+  if (!P.loadedId || P.loadedId !== curId()) { // song not loaded yet: load it paused at that spot
+    loadIdx(P.idx, false, t || .01); onTime(); return;
+  }
+  pendingSeek = t;
+  if (audio.readyState >= 1) applyPendingSeek();
+  else { try { if (audio.getAttribute('src') !== P.url) audio.src = P.url; audio.load(); } catch {} }
+  onTime();
+}
+
 function onTime() {
-  const d = audio.duration, c = audio.currentTime;
-  const has = isFinite(d) && d > 0, r = has && P.loadedId ? c / d : 0;
+  const d = curDur(), c = curPos();
+  const has = d > 0 && !!curId(), r = has ? Math.min(1, c / d) : 0;
   if (!dragging) {
     $('#npFill').style.width = (r * 100) + '%';
-    $('#npCur').textContent = fmt(P.loadedId ? c : (LS.get('player', {}).pos || 0));
-    const t = byId(curId());
-    $('#npRem').textContent = '-' + fmt(has && P.loadedId ? d - c : (t ? t.duration : 0));
+    $('#npCur').textContent = fmt(c);
+    $('#npRem').textContent = '-' + fmt(Math.max(0, d - c));
   }
   $('#miniPg').style.width = (r * 100) + '%';
   if (P.sleep && P.sleep.at) {
@@ -698,9 +743,9 @@ function onTime() {
   }
   const now = Date.now();
   if (!audio.paused && P.loadedId && now - lastSave > 5000) { lastSave = now; savePos(); }
-  if (has && P.loadedId && now - lastPS > 1000 && 'mediaSession' in navigator && navigator.mediaSession.setPositionState) {
+  if (has && P.loadedId && isFinite(audio.duration) && now - lastPS > 1000 && 'mediaSession' in navigator && navigator.mediaSession.setPositionState) {
     lastPS = now;
-    try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audio.playbackRate || 1, position: Math.min(c, d) }); } catch {}
+    try { navigator.mediaSession.setPositionState({ duration: audio.duration, playbackRate: audio.playbackRate || 1, position: Math.min(audio.currentTime, audio.duration) }); } catch {}
   }
 }
 
@@ -720,7 +765,7 @@ function updateMediaSession(t) {
   h('nexttrack', long ? null : () => next());
   h('seekbackward', long ? d => seekBy(-((d && d.seekOffset) || settings.skip)) : null);
   h('seekforward', long ? d => seekBy((d && d.seekOffset) || settings.skip) : null);
-  h('seekto', d => { if (d && isFinite(d.seekTime)) { audio.currentTime = d.seekTime; onTime(); } });
+  h('seekto', d => { if (d && isFinite(d.seekTime)) seekTo(d.seekTime); });
 }
 
 /* ================= Rendering ================= */
@@ -935,12 +980,13 @@ function closeNP() { np.classList.remove('open'); document.body.classList.remove
 function bindNP() {
   const sc = $('#scrub');
   const ratio = e => { const r = sc.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); };
-  const show = r => { const d = audio.duration; $('#npFill').style.width = r * 100 + '%'; $('#npCur').textContent = fmt(r * d); $('#npRem').textContent = '-' + fmt(d - r * d); };
-  sc.addEventListener('pointerdown', e => { if (!P.loadedId || !isFinite(audio.duration)) return; dragging = true; sc.setPointerCapture(e.pointerId); sc.classList.add('drag'); show(ratio(e)); });
+  const show = r => { const d = curDur(); last = r; $('#npFill').style.width = r * 100 + '%'; $('#npCur').textContent = fmt(r * d); $('#npRem').textContent = '-' + fmt(d - r * d); };
+  let last = 0;
+  sc.addEventListener('pointerdown', e => { if (!curId() || !curDur()) return; try { sc.setPointerCapture(e.pointerId); } catch {} dragging = true; sc.classList.add('drag'); show(ratio(e)); });
   sc.addEventListener('pointermove', e => { if (dragging) show(ratio(e)); });
-  const end = e => { if (!dragging) return; dragging = false; sc.classList.remove('drag'); audio.currentTime = ratio(e) * audio.duration; onTime(); };
+  const end = e => { if (!dragging) return; dragging = false; sc.classList.remove('drag'); if (e && e.type === 'pointerup') last = ratio(e); seekTo(last * curDur()); };
   sc.addEventListener('pointerup', end);
-  sc.addEventListener('pointercancel', () => { dragging = false; sc.classList.remove('drag'); onTime(); });
+  sc.addEventListener('pointercancel', end); // iOS can cancel a drag mid-way: still jump to where the finger was
   // Swipe down on the artwork to close
   const top = $('#npTop'); let sy = null, dy = 0;
   top.addEventListener('touchstart', e => { sy = e.touches[0].clientY; dy = 0; np.style.transition = 'none'; np.classList.add('moving'); }, { passive: true });
