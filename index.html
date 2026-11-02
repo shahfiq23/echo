@@ -314,7 +314,7 @@ body.playing .spin{animation-play-state:running}
 
 <script>
 'use strict';
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 const NAME = 'Shahfiq';
 
 /* ================= Helpers ================= */
@@ -816,13 +816,43 @@ function onTime() {
 }
 
 /* ---------- Lock screen / Control Centre ---------- */
+// Artwork for the Lock Screen and Dynamic Island: a record with the song's cover as its centre label.
+const vinylCache = new Map();
+function vinylArt(t) {
+  if (!vinylCache.has(t.id)) vinylCache.set(t.id, (async () => {
+    const S = 512, c = document.createElement('canvas'); c.width = c.height = S;
+    const x = c.getContext('2d'), cx = S / 2, R = S * .47, L = R * .4;
+    x.fillStyle = '#07080D'; x.fillRect(0, 0, S, S);
+    x.beginPath(); x.arc(cx, cx, R, 0, Math.PI * 2); x.fillStyle = '#111217'; x.fill();
+    x.strokeStyle = 'rgba(255,255,255,0.055)'; x.lineWidth = 2;
+    for (let r = L * 1.12; r < R * .97; r += R * .045) { x.beginPath(); x.arc(cx, cx, r, 0, Math.PI * 2); x.stroke(); }
+    x.lineCap = 'round'; x.lineWidth = R * .05;
+    x.strokeStyle = 'rgba(255,255,255,0.14)'; x.beginPath(); x.arc(cx, cx, R * .78, -2.1, -1.2); x.stroke();
+    x.strokeStyle = 'rgba(255,255,255,0.07)'; x.beginPath(); x.arc(cx, cx, R * .78, 1.04, 1.94); x.stroke();
+    x.save(); x.beginPath(); x.arc(cx, cx, L, 0, Math.PI * 2); x.clip();
+    let drew = false;
+    if (t.hasArt) {
+      try {
+        const bmp = await createImageBitmap(await idb.get('art', t.id));
+        const k = Math.max(2 * L / bmp.width, 2 * L / bmp.height), w = bmp.width * k, h = bmp.height * k;
+        x.drawImage(bmp, cx - w / 2, cx - h / 2, w, h); drew = true;
+      } catch {}
+    }
+    if (!drew) { const [h, s] = tintOf(t); x.fillStyle = `hsl(${h},${s}%,74%)`; x.fillRect(0, 0, S, S); }
+    x.restore();
+    x.beginPath(); x.arc(cx, cx, L, 0, Math.PI * 2); x.strokeStyle = 'rgba(0,0,0,0.55)'; x.lineWidth = 5; x.stroke();
+    x.beginPath(); x.arc(cx, cx, S * .02, 0, Math.PI * 2); x.fillStyle = '#07080D'; x.fill();
+    return c.toDataURL('image/png');
+  })().catch(() => null));
+  return vinylCache.get(t.id);
+}
 function updateMediaSession(t) {
   if (!('mediaSession' in navigator)) return;
   const ms = navigator.mediaSession;
   const fallback = new URL('icons/icon-512.png', location.href).href;
   const setMeta = src => { try { ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist || 'Echo', album: t.album || '', artwork: [{ src, sizes: '512x512', type: src.startsWith('data:image/jpeg') ? 'image/jpeg' : 'image/png' }] }); } catch {} };
   setMeta(fallback);
-  if (t.hasArt) artDataURL(t.id).then(u => { if (u && P.loadedId === t.id) setMeta(u); });
+  vinylArt(t).then(u => { if (u && P.loadedId === t.id) setMeta(u); });
   const h = (a, f) => { try { ms.setActionHandler(a, f); } catch {} };
   const long = t.duration >= 600;
   h('play', () => { audio.muted = false; audio.play().catch(() => {}); });

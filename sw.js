@@ -1,5 +1,5 @@
 // Echo service worker. Bump VERSION on every update.
-const VERSION = 'echo-v2.0.0';
+const VERSION = 'echo-v2.0.1';
 const SHELL = [
   './',
   './index.html',
